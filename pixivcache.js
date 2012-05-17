@@ -65,6 +65,33 @@ var getMetadata = function(id, phpsessid, callback) {
 
 http.createServer(function(req, res) {
   var requestUrl = url.parse(req.url);
+  if(req.method != 'GET') {
+    var body = [];
+    req.on('data', function(data) {
+      body.push(data);
+    });
+    req.on('end', function() {
+      var request = http.request({
+        host: req.headers.host,
+        port: requestUrl.port || 80,
+        path: requestUrl.path,
+        method: req.method,
+        headers: req.headers
+      },
+      function(response) {
+        res.writeHead(response.statusCode, response.headers);
+        response.on('data', function(chunk) {
+          res.write(chunk);
+        });
+        response.on('end', function() {
+          res.end();
+        });
+      });
+      request.write(body.join(''));
+      request.end();
+    });
+    return;
+  }
   if(/^img\d+\.pixiv\.net$/.test(requestUrl.hostname)) {
     if(/^\/img\/[\w\-]+\/(\d+)(?:_p(\d+))?\.\w+$/.test(requestUrl.pathname)) {
       var id = parseInt(RegExp.$1, 10),
@@ -141,7 +168,7 @@ http.createServer(function(req, res) {
                 });
                 response.on('end', function() {
                   res.end();
-                  callback(null, result.join(''));
+                  callback(null, response.statusCode == 200 ? result.join('') : null);
                 });
               });
             },
@@ -158,13 +185,13 @@ http.createServer(function(req, res) {
             var image = results[0];
             var metadata = results[1];
 
-            console.log('store', metadata);
+            if(image) {
+              var name = util.format('%d%s_%s_%s.%s', id, page ? util.format('_%s', paddingLeft(page, 4, '0')) : '', metadata.author, metadata.title, metadata.type).replace(/[\/\*\:\?]/g, '_');
 
-            var name = util.format('%d%s_%s_%s.%s', id, page ? util.format('_%s', paddingLeft(page, 4, '0')) : '', metadata.author, metadata.title, metadata.type).replace(/\*/g, '');
-
-            fs.writeFile(root + '/' + name, image, 'binary', function(err) {
-              if(err) { throw err; }
-            });
+              fs.writeFile(root + '/' + name, image, 'binary', function(err) {
+                if(err) { throw err; }
+              });
+            }
           });
         }
       });
@@ -174,9 +201,8 @@ http.createServer(function(req, res) {
   }
   http.get({
     host: req.headers.host,
-    port: url.parse(req.url).port || 80,
-    method: 'GET',
-    path: req.url,
+    port: requestUrl.port || 80,
+    path: requestUrl.path,
     headers: req.headers
   },
   function(response) {

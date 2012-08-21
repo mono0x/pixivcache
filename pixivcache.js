@@ -176,7 +176,7 @@ http.createServer(function(req, res) {
           if(!(id in metadataCache)) {
             var html = result.join('');
             var doc = $(html);
-            if(/^「(.+)」\/「(.+)」の(イラスト|漫画) \[pixiv\]$/.test(doc.find('title').text())) {
+            if(/^(?:\[R\-18\]\s*)?「(.+)」\/「(.+)」の(イラスト|漫画) \[pixiv\]$/.test(doc.find('title').text())) {
               var title = RegExp.$1;
               var author = RegExp.$2;
 

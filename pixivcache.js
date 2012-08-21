@@ -4,7 +4,8 @@ var util = require('util'),
     fs = require('fs'),
     path = require('path'),
     glob = require('glob'),
-    async = require('async');
+    async = require('async'),
+    $ = require('jquery');
 
 var port = 1942;
 var root = './cache';
@@ -32,39 +33,8 @@ var getCache = function(id, page, callback) {
 
 var metadataCache = {};
 
-var getMetadata = function(id, phpsessid, callback) {
-  if(id in metadataCache) {
-    return metadataCache[id];
-  }
-  http.get({
-    host: 'iphone.pxv.jp',
-    port: 80,
-    path: util.format('/iphone/illust.php?illust_id=%d&PHPSESSID=%s&p=1', id, phpsessid),
-  },
-  function(response) {
-    var result = [];
-    response.on('data', function(chunk) {
-      result.push(chunk);
-    });
-    response.on('end', function() {
-      var m = result.join('').split(',').map(function(s) { return s.replace(/"/g, ''); });
-      var author = m[5];
-      var title = m[3];
-      var type = m[2];
-
-      var metadata = {
-        type: m[2],
-        title: m[3],
-        author: m[5]
-      };
-      metadataCache[id] = metadata;
-      callback(metadata);
-    });
-  });
-};
-
 http.createServer(function(req, res) {
-  var requestUrl = url.parse(req.url);
+  var requestUrl = url.parse(req.url, true);
   if(req.method != 'GET') {
     var body = [];
     req.on('data', function(data) {
@@ -92,12 +62,11 @@ http.createServer(function(req, res) {
     });
     return;
   }
-  if(/^img\d+\.pixiv\.net$/.test(requestUrl.hostname)) {
-    if(/^\/img\/[\w\-]+\/(\d+)(?:_p(\d+))?\.\w+$/.test(requestUrl.pathname)) {
+  if(/^i\d+\.pixiv\.net$/.test(requestUrl.hostname)) {
+    if(/^\/(?:img\d+\/)?img\/[\w\-]+\/(\d+)(?:_big)?(?:_p(\d+))?\.(\w+)$/.test(requestUrl.pathname)) {
       var id = parseInt(RegExp.$1, 10),
-          page = RegExp.$2.length > 0 ? parseInt(RegExp.$2, 10) + 1 : null;
-
-      var phpsessid = /PHPSESSID=(\w+);/.test(req.headers['cookie']) && RegExp.$1;
+          page = RegExp.$2.length > 0 ? parseInt(RegExp.$2, 10) + 1 : null,
+          type = RegExp.$3;
 
       getCache(id, page, function(err, file) {
         if(err) { throw err; }
@@ -144,54 +113,39 @@ http.createServer(function(req, res) {
           });
         }
         else {
-          async.parallel([
-            // image
-            function(callback) {
-              var headers = JSON.parse(JSON.stringify(req.headers));
-              delete headers['if-modified-since'];
-              delete headers['if-none-match'];
-              headers['referer'] = 'http://www.pixiv.net/';
-              http.get({
-                host: req.headers.host,
-                port: url.parse(req.url).port || 80,
-                method: 'GET',
-                path: req.url,
-                headers: headers
-              },
-              function(response) {
-                var result = [];
-                res.writeHead(response.statusCode, response.headers);
-                response.setEncoding('binary');
-                response.on('data', function(chunk) {
-                  res.write(chunk, 'binary');
-                  result.push(chunk);
+          // image
+          var headers = JSON.parse(JSON.stringify(req.headers));
+          delete headers['if-modified-since'];
+          delete headers['if-none-match'];
+          headers['referer'] = 'http://www.pixiv.net/';
+          http.get({
+            host: req.headers.host,
+            port: url.parse(req.url).port || 80,
+            method: 'GET',
+            path: req.url,
+            headers: headers
+          },
+          function(response) {
+            var result = [];
+            res.writeHead(response.statusCode, response.headers);
+            response.setEncoding('binary');
+            response.on('data', function(chunk) {
+              res.write(chunk, 'binary');
+              result.push(chunk);
+            });
+            response.on('end', function() {
+              res.end();
+              var image = response.statusCode == 200 ? result.join('') : null;
+              var metadata = metadataCache[id];
+
+              if(image && metadata) {
+                var name = util.format('%d%s_%s_%s.%s', id, page ? util.format('_%s', paddingLeft(page, 4, '0')) : '', metadata.author, metadata.title, type).replace(/[\/\*\:\?]/g, '_');
+
+                fs.writeFile(root + '/' + name, image, 'binary', function(err) {
+                  if(err) { throw err; }
                 });
-                response.on('end', function() {
-                  res.end();
-                  callback(null, response.statusCode == 200 ? result.join('') : null);
-                });
-              });
-            },
-            // metadata
-            function(callback) {
-              getMetadata(id, phpsessid, function(data) {
-                callback(null, data);
-              });
-            }
-          ],
-          function(err, results) {
-            if(err) { throw err; }
-
-            var image = results[0];
-            var metadata = results[1];
-
-            if(image) {
-              var name = util.format('%d%s_%s_%s.%s', id, page ? util.format('_%s', paddingLeft(page, 4, '0')) : '', metadata.author, metadata.title, metadata.type).replace(/[\/\*\:\?]/g, '_');
-
-              fs.writeFile(root + '/' + name, image, 'binary', function(err) {
-                if(err) { throw err; }
-              });
-            }
+              }
+            });
           });
         }
       });
@@ -199,6 +153,7 @@ http.createServer(function(req, res) {
       return;
     }
   }
+  delete req.headers['accept-encoding'];
   http.get({
     host: req.headers.host,
     port: requestUrl.port || 80,
@@ -206,12 +161,33 @@ http.createServer(function(req, res) {
     headers: req.headers
   },
   function(response) {
+    var result = [];
     res.writeHead(response.statusCode, response.headers);
     response.on('data', function(chunk) {
       res.write(chunk);
+      result.push(chunk);
     });
     response.on('end', function() {
       res.end();
+
+      if(/^www\.pixiv\.net$/.test(requestUrl.hostname)) {
+        if(/^\/member_illust.php$/.test(requestUrl.pathname)) {
+          var id = parseInt(requestUrl.query.illust_id, 10);
+          if(!(id in metadataCache)) {
+            var html = result.join('');
+            var doc = $(html);
+            if(/^「(.+)」\/「(.+)」の(イラスト|漫画) \[pixiv\]$/.test(doc.find('title').text())) {
+              var title = RegExp.$1;
+              var author = RegExp.$2;
+
+              metadataCache[id] = {
+                title: title,
+                author: author
+              };
+            }
+          }
+        }
+      }
     });
   });
 }).listen(port);

@@ -1,3 +1,7 @@
+// npm install mkdirp
+// npm install jquery
+// npm install glob
+
 var util = require('util'),
     url = require('url'),
     http = require('http'),
@@ -5,10 +9,12 @@ var util = require('util'),
     path = require('path'),
     glob = require('glob'),
     async = require('async'),
+    mkdirp = require('mkdirp'),
     $ = require('jquery');
 
 var port = 1942;
 var root = './cache';
+var thumbnail = './thumbnail';
 
 var contentTypes = {
   'jpg': 'image/jpeg',
@@ -99,8 +105,41 @@ function returnImage(req, res, requestUrl, id, page, type) {
       returnCache(res, file);
     }
     else {
-      proxyImage(req, res, requestUrl, id, page, type);
+      proxyImage(req, res, requestUrl, function(response, image) {
+        var metadata = metadataCache[id];
+
+        if(image && metadata) {
+          console.log('store', metadata);
+          fs.writeFile(root + '/' + fileName(id, page, type, metadata), image, 'binary', function(err) {
+            if(err) { throw err; }
+          });
+        }
+      });
     }
+  });
+}
+
+function returnThumbnail(req, res, requestUrl, id, size, type) {
+  console.log('thumbnail', id, type);
+  var dir = util.format('%s/%s/%d', thumbnail, size, Math.floor(id / 10000));
+  var path = util.format('%s/%d_%s.%s', dir, id, size, type);
+  mkdirp(dir, {},function(err, made) {
+    if(err) { throw err; }
+    fs.exists(path, function(exists) {
+      if(exists) {
+        returnCache(res, path);
+      }
+      else {
+        proxyImage(req, res, requestUrl, function(response, image) {
+          if(image) {
+            console.log('store', req.url);
+            fs.writeFile(path, image, 'binary', function(err) {
+              if(err) { throw err; }
+            });
+          }
+        });
+      }
+    });
   });
 }
 
@@ -145,8 +184,8 @@ function returnCache(res, file) {
   });
 }
 
-function proxyImage(req, res, requestUrl, id, page, type) {
-  console.log('get image', id, page, type, req.url);
+function proxyImage(req, res, requestUrl, callback) {
+  console.log('get image', req.url);
   delete req.headers['if-modified-since'];
   delete req.headers['if-none-match'];
   req.headers['referer'] = 'http://www.pixiv.net/';
@@ -168,14 +207,7 @@ function proxyImage(req, res, requestUrl, id, page, type) {
     response.on('end', function() {
       res.end();
       var image = response.statusCode == 200 ? result.join('') : null;
-      var metadata = metadataCache[id];
-
-      if(image && metadata) {
-        console.log('store', metadata);
-        fs.writeFile(root + '/' + fileName(id, page, type, metadata), image, 'binary', function(err) {
-          if(err) { throw err; }
-        });
-      }
+      callback(response, image);
     });
   });
 }
@@ -190,6 +222,10 @@ http.createServer(function(req, res) {
   if(/^i\d+\.pixiv\.net$/.test(requestUrl.hostname)) {
     if(/^\/(?:img\d+\/)?img\/[\w\-]+\/(\d+)(?:_big)?(?:_p(\d+))?\.(\w+)$/.test(requestUrl.pathname)) {
       returnImage(req, res, requestUrl, parseInt(RegExp.$1, 10), RegExp.$2.length > 0 ? parseInt(RegExp.$2, 10) + 1 : null, RegExp.$3);
+      return;
+    }
+    if(/^\/(?:img\d+\/)?img\/[\w\-]+\/(\d+)_(s|m)\.(\w+)$/.test(requestUrl.pathname)) {
+      returnThumbnail(req, res, requestUrl, parseInt(RegExp.$1, 10), RegExp.$2, RegExp.$3);
       return;
     }
   }

@@ -1,7 +1,3 @@
-// npm install mkdirp
-// npm install jquery
-// npm install glob
-
 var util = require('util'),
     url = require('url'),
     http = require('http'),
